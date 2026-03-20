@@ -1,0 +1,7 @@
+# Pixi environments
+.pixi/*
+!.pixi/config.toml
+pixi.lock
+
+# Python cache 
+__pycache__/
