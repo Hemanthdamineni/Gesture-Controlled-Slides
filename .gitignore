@@ -5,3 +5,8 @@ pixi.lock
 
 # Python cache 
 __pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local reference repos / scratch workspace
+.references/
