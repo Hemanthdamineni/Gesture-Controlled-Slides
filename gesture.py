@@ -15,19 +15,10 @@ from config import (
     CAMERA_PROBE_WARMUP_FRAMES,
     CAMERA_INDEX,
     CAMERA_READ_RETRY_SEC,
-    FIST_FRAMES_REQUIRED,
     FRAME_HEIGHT,
     FRAME_WIDTH,
-    GESTURE_COOLDOWN_SEC,
     IDLE_SLEEP_SEC,
     MAX_HANDS,
-    MIN_DETECTION_CONFIDENCE,
-    MIN_TRACKING_CONFIDENCE,
-    NO_HAND_RESET_FRAMES,
-    SWIPE_BUFFER_SIZE,
-    SWIPE_MIN_SAMPLES,
-    SWIPE_THRESHOLD,
-    SWIPE_WINDOW_SEC,
     TARGET_FPS,
     VISUALIZATION_ACCENT_ACTION,
     VISUALIZATION_ACCENT_NEXT,
@@ -36,21 +27,10 @@ from config import (
     VISUALIZATION_TEXT_COLOR,
     VISUALIZATION_WINDOW_NAME,
 )
+from runtime import config, state, frames
 from trigger import next_slide, pause_slide, prev_slide
 
 
-@contextmanager
-def _suppress_stderr():
-    """Temporarily silence native stderr noise while probing camera devices."""
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    old_stderr = os.dup(2)
-    try:
-        os.dup2(devnull, 2)
-        yield
-    finally:
-        os.dup2(old_stderr, 2)
-        os.close(old_stderr)
-        os.close(devnull)
 
 
 class GestureController:
@@ -66,7 +46,8 @@ class GestureController:
         self._last_action = "-"
         self._visualize = visualize
         self._visualization_window_open = False
-        self._wrist_x_buffer = deque(maxlen=SWIPE_BUFFER_SIZE)
+        self._visualization_window_open = False
+        self._wrist_x_buffer = deque(maxlen=int(config.get("SWIPE_BUFFER_SIZE", 8)))
         self._fist_frame_count = 0
         self._last_gesture_time = 0.0
         self._mp_draw = mp.solutions.drawing_utils
@@ -117,7 +98,7 @@ class GestureController:
 
     def _prune_stale_swipe_samples(self, now):
         """Keep only recent wrist samples within the swipe time window."""
-        while self._wrist_x_buffer and (now - self._wrist_x_buffer[0][0]) > SWIPE_WINDOW_SEC:
+        while self._wrist_x_buffer and (now - self._wrist_x_buffer[0][0]) > config.get("SWIPE_WINDOW_SEC", 0.45):
             self._wrist_x_buffer.popleft()
 
     def _swipe_debug_state(self, now):
@@ -144,7 +125,7 @@ class GestureController:
             now = time.time()
 
         swipe_state = self._swipe_debug_state(now)
-        return {
+        st = {
             "hand_detected": False,
             "paused": not self.running,
             "action": None,
@@ -153,13 +134,15 @@ class GestureController:
             "buffer_values": swipe_state["buffer_values"],
             "buffer_delta": swipe_state["buffer_delta"],
             "buffer_span": swipe_state["buffer_span"],
-            "min_swipe_samples": min(SWIPE_BUFFER_SIZE, SWIPE_MIN_SAMPLES),
+            "min_swipe_samples": min(config.get("SWIPE_BUFFER_SIZE", 8), config.get("SWIPE_MIN_SAMPLES", 4)),
             "fist_detected": False,
             "fist_frame_count": self._fist_frame_count,
             "fist_armed": self._fist_armed,
             "finger_curled": [],
-            "cooldown_remaining": max(0.0, GESTURE_COOLDOWN_SEC - (now - self._last_gesture_time)),
+            "cooldown_remaining": max(0.0, config.get("GESTURE_COOLDOWN_SEC", 0.9) - (now - self._last_gesture_time)),
         }
+        state.publish(st)
+        return st
 
     def _open_visualization_window(self):
         """Create the visualization window when requested."""
@@ -212,7 +195,7 @@ class GestureController:
             return
 
         start_x = left + int(buffer_values[0] * bar_width)
-        threshold_px = int(SWIPE_THRESHOLD * bar_width)
+        threshold_px = int(config.get("SWIPE_THRESHOLD", 0.04) * bar_width)
         cv2.line(frame, (start_x + threshold_px, top), (start_x + threshold_px, bottom), VISUALIZATION_ACCENT_NEXT, 1)
         cv2.line(frame, (start_x - threshold_px, top), (start_x - threshold_px, bottom), VISUALIZATION_ACCENT_PREV, 1)
 
@@ -257,6 +240,10 @@ class GestureController:
         cooldown_remaining = debug_info.get("cooldown_remaining", 0.0)
         status = "paused" if debug_info.get("paused") else "active"
 
+        swipe_threshold = config.get("SWIPE_THRESHOLD", 0.04)
+        swipe_window = config.get("SWIPE_WINDOW_SEC", 0.45)
+        fist_frames_req = config.get("FIST_FRAMES_REQUIRED", 3)
+
         lines = [
             f"camera={self._camera_index} status={status} hand_detected={debug_info.get('hand_detected', False)}",
             f"wrist_x={wrist_x:.3f}" if wrist_x is not None else "wrist_x=-",
@@ -265,8 +252,8 @@ class GestureController:
                 if buffer_delta is not None
                 else f"swipe_samples={buffer_len} min={min_swipe_samples} delta=-"
             ),
-            f"swipe_threshold={SWIPE_THRESHOLD:.3f} window={buffer_span:.2f}/{SWIPE_WINDOW_SEC:.2f}s cooldown={cooldown_remaining:.2f}s",
-            f"fist_frames={fist_count}/{FIST_FRAMES_REQUIRED} fist_detected={debug_info.get('fist_detected', False)} armed={debug_info.get('fist_armed', True)}",
+            f"swipe_threshold={swipe_threshold:.3f} window={buffer_span:.2f}/{swipe_window:.2f}s cooldown={cooldown_remaining:.2f}s",
+            f"fist_frames={fist_count}/{fist_frames_req} fist_detected={debug_info.get('fist_detected', False)} armed={debug_info.get('fist_armed', True)}",
             f"curled_fingers={debug_info.get('finger_curled', [])}",
             f"action_now={action} last_action={self._last_action}",
             "Controls: q or Esc closes the visualization window",
@@ -277,9 +264,9 @@ class GestureController:
         for idx, line in enumerate(lines):
             color = VISUALIZATION_TEXT_COLOR
             if idx == 2 and buffer_delta is not None:
-                if buffer_delta > SWIPE_THRESHOLD:
+                if buffer_delta > swipe_threshold:
                     color = VISUALIZATION_ACCENT_NEXT
-                elif buffer_delta < -SWIPE_THRESHOLD:
+                elif buffer_delta < -swipe_threshold:
                     color = VISUALIZATION_ACCENT_PREV
             if idx == 4 and debug_info.get("fist_detected"):
                 color = VISUALIZATION_ACCENT_TRACK
@@ -315,80 +302,112 @@ class GestureController:
         except cv2.error:
             self._close_visualization_window(disable=True)
 
-    def _candidate_camera_indices(self):
-        """Return camera indices to probe, preferring the configured index first."""
-        detected_indices = []
+    def _candidate_camera_sources(self):
+        """Return camera sources to probe, preferring configured index format first."""
+        candidates = []
+        if isinstance(CAMERA_INDEX, str):
+            if CAMERA_INDEX.isdigit():
+                candidates.append(f"/dev/video{CAMERA_INDEX}")
+                candidates.append(int(CAMERA_INDEX))
+            else:
+                candidates.append(CAMERA_INDEX)
+        else:
+            candidates.append(f"/dev/video{CAMERA_INDEX}")
+            candidates.append(int(CAMERA_INDEX))
+
+        detected = []
         for path in glob("/dev/video*"):
+            detected.append(path)
             match = re.search(r"(\d+)$", path)
             if match:
-                detected_indices.append(int(match.group(1)))
-
-        if not detected_indices:
-            return [CAMERA_INDEX]
-
-        ordered = []
+                detected.append(int(match.group(1)))
+                
+        # Ensure we don't have dupes but keep ordering
+        deduped = []
         seen = set()
-
-        def add(index):
-            if index not in seen:
-                ordered.append(index)
-                seen.add(index)
-
-        add(CAMERA_INDEX)
-        for index in sorted((idx for idx in detected_indices if idx > CAMERA_INDEX), reverse=True):
-            add(index)
-        for index in sorted((idx for idx in detected_indices if idx < CAMERA_INDEX)):
-            add(index)
-        return ordered
+        for cand in candidates + detected:
+            key = (type(cand), str(cand))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(cand)
+        return deduped
 
     def _open_camera(self):
         """Probe available camera nodes and return the first working capture."""
-        candidates = self._candidate_camera_indices()
-        print(f"[GestureController] Probing camera indices: {candidates}")
+        candidates = self._candidate_camera_sources()
+        print(f"[GestureController] Probing camera sources: {candidates[:15]}...")
+        import sys
 
-        for index in candidates:
-            with _suppress_stderr():
-                cap = cv2.VideoCapture(index)
-                is_opened = cap.isOpened()
+        for source in candidates:
+            if sys.platform.startswith("linux"):
+                if isinstance(source, str) and source.startswith("/dev/video"):
+                    backends = [cv2.CAP_FFMPEG, cv2.CAP_ANY, cv2.CAP_V4L2]
+                elif isinstance(source, int):
+                    backends = [cv2.CAP_V4L2]
+                else:
+                    backends = [cv2.CAP_ANY]
+            else:
+                backends = [cv2.CAP_ANY]
 
-            if not is_opened:
-                cap.release()
-                continue
+            for backend in backends:
+                cap = cv2.VideoCapture(source, backend)
+                
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+                    
+                found_frame = False
+                for _ in range(CAMERA_PROBE_WARMUP_FRAMES):
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        found_frame = True
+                        break
+                    time.sleep(CAMERA_READ_RETRY_SEC)
 
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-            cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
-
-            for _ in range(CAMERA_PROBE_WARMUP_FRAMES):
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    self._camera_index = index
-                    print(f"[GestureController] Using camera index {index}")
+                if found_frame:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+                    cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+                    
+                    self._camera_index = source
+                    print(f"[GestureController] Using camera {source} with backend {backend}")
                     return cap
-                time.sleep(CAMERA_READ_RETRY_SEC)
 
-            cap.release()
+                cap.release()
 
-        print(f"[GestureController] Error: Could not open any camera from {candidates}")
+        print(f"[GestureController] Error: Could not open any camera from candidates")
         return None
 
     def _loop(self):
-        cap = self._open_camera()
-        if cap is None:
-            return
-
         self._open_visualization_window()
         hands = self._mp_hands.Hands(
             max_num_hands=MAX_HANDS,
-            min_detection_confidence=MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=MIN_TRACKING_CONFIDENCE,
+            min_detection_confidence=config.get("MIN_DETECTION_CONFIDENCE", 0.5),
+            min_tracking_confidence=config.get("MIN_TRACKING_CONFIDENCE", 0.4),
         )
+        cap = None
 
         try:
             while not self._stop_event.is_set():
+                if cap is None:
+                    cap = self._open_camera()
+                    if cap is None:
+                        debug_info = self._snapshot_debug_state()
+                        debug_info["hand_detected"] = False
+                        debug_info["paused"] = True
+                        state.publish(debug_info)
+                        if self._visualize:
+                            import numpy as np
+                            frame = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
+                            self._render_visualization(frame, None, debug_info)
+                        time.sleep(2.0)
+                        continue
+
                 frame_started_at = time.perf_counter()
                 ret, frame = cap.read()
                 if not ret:
+                    cap.release()
+                    cap = None
                     time.sleep(IDLE_SLEEP_SEC)
                     continue
 
@@ -426,6 +445,8 @@ class GestureController:
                         debug_info = self._snapshot_debug_state()
                     self._render_visualization(frame, hand_landmarks, debug_info)
 
+                frames.put(frame)
+
                 frame_time_budget = 1.0 / TARGET_FPS if TARGET_FPS > 0 else 0.0
                 frame_elapsed = time.perf_counter() - frame_started_at
                 if frame_time_budget > frame_elapsed:
@@ -433,15 +454,16 @@ class GestureController:
         finally:
             self._close_visualization_window()
             hands.close()
-            cap.release()
-            print("[GestureController] Camera released")
+            if cap is not None:
+                cap.release()
+            print("[GestureController] Camera thread exited")
 
     def _process_landmarks(self, landmarks, fire_actions=True):
         now = time.time()
         wrist_x = landmarks[0].x
         finger_curled = self._finger_curl_states(landmarks)
         fist_detected = all(finger_curled)
-        cooldown_remaining = max(0.0, GESTURE_COOLDOWN_SEC - (now - self._last_gesture_time))
+        cooldown_remaining = max(0.0, config.get("GESTURE_COOLDOWN_SEC", 0.9) - (now - self._last_gesture_time))
         swipe_state = self._swipe_debug_state(now)
 
         debug_info = {
@@ -453,7 +475,7 @@ class GestureController:
             "buffer_values": swipe_state["buffer_values"],
             "buffer_delta": swipe_state["buffer_delta"],
             "buffer_span": swipe_state["buffer_span"],
-            "min_swipe_samples": min(SWIPE_BUFFER_SIZE, SWIPE_MIN_SAMPLES),
+            "min_swipe_samples": min(config.get("SWIPE_BUFFER_SIZE", 8), config.get("SWIPE_MIN_SAMPLES", 4)),
             "fist_detected": fist_detected,
             "fist_frame_count": self._fist_frame_count,
             "fist_armed": self._fist_armed,
@@ -465,6 +487,7 @@ class GestureController:
             if not fist_detected:
                 self._fist_armed = True
                 debug_info["fist_armed"] = True
+            state.publish(debug_info)
             return debug_info
 
         if fist_detected:
@@ -477,7 +500,7 @@ class GestureController:
                 self._fist_frame_count += 1
             debug_info["fist_frame_count"] = self._fist_frame_count
             debug_info["fist_armed"] = self._fist_armed
-            if self._fist_armed and self._fist_frame_count >= FIST_FRAMES_REQUIRED:
+            if self._fist_armed and self._fist_frame_count >= config.get("FIST_FRAMES_REQUIRED", 3):
                 if fire_actions:
                     pause_slide()
                 self._last_gesture_time = now
@@ -486,7 +509,8 @@ class GestureController:
                 debug_info["action"] = "pause"
                 debug_info["fist_frame_count"] = 0
                 debug_info["fist_armed"] = False
-                debug_info["cooldown_remaining"] = GESTURE_COOLDOWN_SEC
+                debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
+            state.publish(debug_info)
             return debug_info
 
         self._fist_frame_count = 0
@@ -499,9 +523,12 @@ class GestureController:
         debug_info["buffer_span"] = swipe_state["buffer_span"]
         debug_info["fist_frame_count"] = 0
         debug_info["fist_armed"] = True
+        
+        swipe_threshold = config.get("SWIPE_THRESHOLD", 0.04)
+
         if debug_info["buffer_len"] >= debug_info["min_swipe_samples"] and debug_info["buffer_delta"] is not None:
             delta = debug_info["buffer_delta"]
-            if delta > SWIPE_THRESHOLD:
+            if delta > swipe_threshold:
                 if fire_actions:
                     next_slide()
                 self._last_gesture_time = now
@@ -511,8 +538,8 @@ class GestureController:
                 debug_info["buffer_values"] = []
                 debug_info["buffer_span"] = 0.0
                 debug_info["buffer_delta"] = None
-                debug_info["cooldown_remaining"] = GESTURE_COOLDOWN_SEC
-            elif delta < -SWIPE_THRESHOLD:
+                debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
+            elif delta < -swipe_threshold:
                 if fire_actions:
                     prev_slide()
                 self._last_gesture_time = now
@@ -522,8 +549,9 @@ class GestureController:
                 debug_info["buffer_values"] = []
                 debug_info["buffer_span"] = 0.0
                 debug_info["buffer_delta"] = None
-                debug_info["cooldown_remaining"] = GESTURE_COOLDOWN_SEC
+                debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
 
+        state.publish(debug_info)
         return debug_info
 
     @staticmethod
