@@ -3,6 +3,7 @@
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import sys
 
 from PIL import Image, ImageDraw
 import pystray
