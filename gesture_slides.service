@@ -1,0 +1,41 @@
+# systemd user service for GestureSlides.
+#
+# Install:
+#   ./install-service.sh
+#
+# Or manually:
+#   cp gesture_slides.service ~/.config/systemd/user/gesture_slides.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now gesture_slides.service
+#
+# View logs:
+#   journalctl --user -u gesture_slides -f
+
+[Unit]
+Description=GestureSlides — gesture-controlled slide navigation
+Documentation=https://github.com/Hemanthdamineni/Gesture-Controlled-Slides
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# %h expands to the user's home directory.
+ExecStart=%h/.pixi/bin/pixi run python main.py
+WorkingDirectory=%h/Desktop/Coding-Things/Projects/Personal/00_Active/Gesture-Controlled-Slides
+Restart=on-failure
+RestartSec=5
+
+# Wayland / X11 session environment.
+Environment=DISPLAY=:0
+# DBUS_SESSION_BUS_ADDRESS is usually inherited from the graphical session;
+# set it explicitly only if the service fails to connect to the session bus.
+# Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+# Optional: pass --web to also start the monitoring dashboard.
+# ExecStart=%h/.pixi/bin/pixi run python main.py --web
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target
