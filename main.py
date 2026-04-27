@@ -15,6 +15,11 @@ def parse_args():
         action="store_true",
         help="Open an OpenCV window with MediaPipe landmarks and gesture-state overlays.",
     )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Start the local web dashboard for live tuning at http://localhost:7474",
+    )
     return parser.parse_args()
 
 
@@ -45,6 +50,13 @@ def _tray_builders():
 def main():
     args = parse_args()
     from gesture import GestureController
+    
+    if args.web:
+        import threading
+        from web.server import run_server
+        web_thread = threading.Thread(target=run_server, daemon=True, name="web-server")
+        web_thread.start()
+        print("[main] Web dashboard running at http://localhost:7474")
 
     controller = GestureController(visualize=args.visualize)
     controller.start()

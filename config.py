@@ -48,3 +48,18 @@ ICON_COLOR_ACTIVE = (34, 197, 94)
 ICON_COLOR_PAUSED = (107, 114, 128)
 ICON_COLOR_BG = (0, 0, 0, 0)
 APP_NAME = "GestureSlides"
+
+# --- Web dashboard ---
+WEB_SERVER_HOST = "127.0.0.1"
+WEB_SERVER_PORT = 7474
+ENABLE_CAMERA_PREVIEW = True   # stream MJPEG frames to the dashboard
+
+# --- Per-app key overrides ---
+# Map window-title substrings (case-insensitive) to action→key dicts.
+# The first matching pattern wins; fall back to KEY_* constants above.
+# Uncomment / extend as needed for your presentation tools.
+APP_KEY_BINDINGS: dict[str, dict[str, str]] = {
+    # "google-chrome": {"next": "right", "prev": "left", "pause": "b"},
+    # "libreoffice impress": {"next": "right", "prev": "left", "pause": "b"},
+    # "keynote": {"next": "right", "prev": "left", "pause": "b"},
+}

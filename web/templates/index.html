@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GestureSlides Dashboard</title>
+    <style>
+        :root {
+            --bg: #1e1e2e;
+            --surface: #313244;
+            --text-main: #cdd6f4;
+            --text-muted: #a6adc8;
+            --accent: #f38ba8;
+            --success: #a6e3a1;
+            --info: #89b4fa;
+        }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .card {
+            background: var(--surface);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        h2 { margin-top: 0; font-size: 1.2rem; border-bottom: 2px solid var(--bg); padding-bottom: 10px; }
+        .feed img { width: 100%; border-radius: 8px; }
+        
+        .state-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--bg); }
+        .state-val { font-family: monospace; color: var(--success); }
+        .state-val.false { color: var(--accent); }
+        
+        .config-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 15px; }
+        .config-row label { font-size: 0.9rem; color: var(--text-muted); }
+        input[type="range"] { width: 100%; }
+        input[type="number"] { background: var(--bg); color: var(--text-main); border: 1px solid var(--text-muted); padding: 5px; border-radius: 4px; }
+        
+        .action-log {
+            font-family: monospace;
+            background: var(--bg);
+            padding: 10px;
+            border-radius: 8px;
+            height: 150px;
+            overflow-y: auto;
+        }
+        .action-log div { margin-bottom: 4px; }
+        .action-next { color: var(--success); }
+        .action-prev { color: var(--info); }
+        .action-pause { color: var(--accent); }
+        
+        /* Layout adjust for mobile */
+        @media (max-width: 768px) {
+            .container { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        
+        <!-- Live Feed & State -->
+        <div class="card">
+            <h2>Live Feed</h2>
+            <div class="feed">
+                <img src="/video_feed" alt="Camera disabled or loading..." onerror="this.style.display='none'">
+            </div>
+            
+            <h2 style="margin-top:20px;">Current State</h2>
+            <div class="state-row">
+                <span>Hand Detected</span>
+                <span class="state-val" id="state-hand">No</span>
+            </div>
+            <div class="state-row">
+                <span>Fist Detected</span>
+                <span class="state-val" id="state-fist">No</span>
+            </div>
+            <div class="state-row">
+                <span>Wrist X</span>
+                <span class="state-val" id="state-wrist">-</span>
+            </div>
+            <div class="state-row">
+                <span>Swipe Buffer Length</span>
+                <span class="state-val" id="state-buf-len">-</span>
+            </div>
+            <div class="state-row">
+                <span>Cooldown Remaining</span>
+                <span class="state-val" id="state-cooldown">0.0s</span>
+            </div>
+        </div>
+        
+        <!-- Tuner & History -->
+        <div>
+            <div class="card" style="margin-bottom: 20px;">
+                <h2>Live Tuning</h2>
+                <div id="config-forms">
+                    <!-- Config fields injected here via JS -->
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>Action History</h2>
+                <div class="action-log" id="action-log">
+                    <!-- Actions injected here -->
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // -- Configuration Syncing --
+        const configForms = document.getElementById('config-forms');
+        
+        function debounce(func, timeout = 300){
+            let timer;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => { func.apply(this, args); }, timeout);
+            };
+        }
+
+        const sendConfigUpdate = debounce(async (key, value) => {
+            await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: Number(value) })
+            });
+        });
+
+        async function loadConfig() {
+            const res = await fetch('/api/config');
+            const data = await res.json();
+            
+            const fields = [
+                { key: 'SWIPE_THRESHOLD', type: 'number', step: '0.01', min: '0.01', max: '0.2' },
+                { key: 'SWIPE_WINDOW_SEC', type: 'number', step: '0.05', min: '0.1', max: '1.0' },
+                { key: 'SWIPE_MIN_SAMPLES', type: 'number', step: '1', min: '2', max: '10' },
+                { key: 'SWIPE_BUFFER_SIZE', type: 'number', step: '1', min: '4', max: '20' },
+                { key: 'GESTURE_COOLDOWN_SEC', type: 'number', step: '0.1', min: '0.1', max: '3.0' },
+                { key: 'MIN_DETECTION_CONFIDENCE', type: 'number', step: '0.05', min: '0.1', max: '1.0' }
+            ];
+
+            let html = '';
+            fields.forEach(f => {
+                const val = data[f.key];
+                html += `
+                    <div class="config-row">
+                        <label>${f.key}</label>
+                        <div style="display:flex; gap:10px;">
+                            <input type="range" class="cfg-slider" min="${f.min}" max="${f.max}" step="${f.step}" value="${val}" data-key="${f.key}">
+                            <input type="number" class="cfg-input" min="${f.min}" max="${f.max}" step="${f.step}" value="${val}" data-key="${f.key}" style="width:80px;">
+                        </div>
+                    </div>
+                `;
+            });
+            configForms.innerHTML = html;
+
+            document.querySelectorAll('.cfg-slider').forEach(el => {
+                el.addEventListener('input', (e) => {
+                    const k = e.target.getAttribute('data-key');
+                    const v = e.target.value;
+                    document.querySelector(`.cfg-input[data-key="${k}"]`).value = v;
+                    sendConfigUpdate(k, v);
+                });
+            });
+            
+            document.querySelectorAll('.cfg-input').forEach(el => {
+                el.addEventListener('change', (e) => {
+                    const k = e.target.getAttribute('data-key');
+                    const v = e.target.value;
+                    document.querySelector(`.cfg-slider[data-key="${k}"]`).value = v;
+                    sendConfigUpdate(k, v);
+                });
+            });
+        }
+        
+        loadConfig();
+
+        // -- SSE Stream for Live State --
+        const evtSource = new EventSource("/api/state/stream");
+        
+        const formatAction = (a) => `<span class="action-${a}">[${new Date().toLocaleTimeString()}] ${a.toUpperCase()}</span>`;
+        
+        evtSource.onmessage = function(e) {
+            const msg = JSON.parse(e.data);
+            if (msg.type === "state") {
+                const st = msg.data;
+                
+                document.getElementById('state-hand').innerText = st.hand_detected ? 'Yes' : 'No';
+                document.getElementById('state-hand').className = 'state-val ' + (st.hand_detected ? '' : 'false');
+                
+                document.getElementById('state-fist').innerText = st.fist_detected ? 'Yes' : 'No';
+                document.getElementById('state-fist').className = 'state-val ' + (st.fist_detected ? '' : 'false');
+                
+                document.getElementById('state-wrist').innerText = st.wrist_x !== null ? st.wrist_x.toFixed(3) : '-';
+                document.getElementById('state-buf-len').innerText = st.buffer_len + ' / ' + st.min_swipe_samples;
+                document.getElementById('state-cooldown').innerText = st.cooldown_remaining.toFixed(2) + 's';
+                
+                if (st.action) {
+                    const lg = document.getElementById('action-log');
+                    const entry = document.createElement('div');
+                    entry.innerHTML = formatAction(st.action);
+                    lg.prepend(entry);
+                    if (lg.children.length > 20) {
+                        lg.removeChild(lg.lastChild);
+                    }
+                }
+            }
+        };
+
+        evtSource.onerror = function() {
+            console.error("SSE connection lost. Reconnecting...");
+        };
+    </script>
+</body>
+</html>
