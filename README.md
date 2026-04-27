@@ -12,6 +12,8 @@ The app currently supports:
 - Pixi-based environment management
 - tray mode when the desktop provides a usable tray backend
 - foreground visualization mode for debugging landmarks and gesture state
+- optional local web dashboard for live tuning and monitoring
+- per-app key overrides plus Wayland-friendly `ydotool` key dispatch fallback
 
 The project now lives directly in the repository root. There is no nested `gesture-slides/` source directory anymore.
 
@@ -22,6 +24,11 @@ The project now lives directly in the repository root. There is no nested `gestu
 - `trigger.py`: keyboard actions sent to the presentation app
 - `tray.py`: `pystray` and GTK/AppIndicator tray backends
 - `config.py`: gesture, camera, tray, and visualization settings
+- `runtime.py`: shared runtime config/state/frame store
+- `web/`: Flask dashboard server and UI
+- `tests/`: gesture recognition unit tests
+- `gesture_slides.service`: sample `systemd --user` service unit
+- `install-service.sh`: helper to install and enable the service
 - `requirements.txt`: Python package pins
 - `start_linux.sh`: background launcher with log output
 - `start_mac.sh`: background launcher without terminal attachment
@@ -67,6 +74,18 @@ Visualization run:
 pixi run python main.py --visualize
 ```
 
+Web dashboard run:
+
+```bash
+pixi run python main.py --web
+```
+
+Web + visualization run:
+
+```bash
+pixi run python main.py --visualize --web
+```
+
 `--visualize` runs in the foreground without the tray backend and opens an OpenCV window with:
 
 - MediaPipe landmarks
@@ -80,6 +99,12 @@ Controls in visualization mode:
 - `q`: close the visualization window
 - `Esc`: close the visualization window
 - `Ctrl+C`: stop the app from the terminal
+
+Run unit tests:
+
+```bash
+pixi run python -m unittest discover tests
+```
 
 Background launchers:
 
@@ -128,6 +153,7 @@ These values were adjusted to tolerate brief hand dropouts and slower real-world
 4. Wrist motion across a short time window is used for swipe detection.
 5. Curled finger tips relative to PIP joints are used for fist detection.
 6. `trigger.py` sends `right`, `left`, or `b` through `pyautogui`.
+7. When `--web` is enabled, live state and camera frames are streamed to the dashboard.
 
 ## Stopping the app
 
