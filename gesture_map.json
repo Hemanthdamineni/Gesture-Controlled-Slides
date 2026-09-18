@@ -1,0 +1,7 @@
+{
+  "swipe_left": "prev",
+  "swipe_right": "next",
+  "palm_hold": "last",
+  "double_fist": "first",
+  "fist": "pause"
+}

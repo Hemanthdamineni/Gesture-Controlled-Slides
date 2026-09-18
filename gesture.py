@@ -15,10 +15,16 @@ from config import (
     CAMERA_PROBE_WARMUP_FRAMES,
     CAMERA_INDEX,
     CAMERA_READ_RETRY_SEC,
+    DOUBLE_FIST_WINDOW_SEC,
+    FIST_FRAMES_REQUIRED,
     FRAME_HEIGHT,
     FRAME_WIDTH,
     IDLE_SLEEP_SEC,
     MAX_HANDS,
+    PALM_HOLD_FRAMES_REQUIRED,
+    PALM_HOLD_MAX_MOVEMENT,
+    SWIPE_DEAD_ZONE,
+    SWIPE_VELOCITY_THRESHOLD,
     TARGET_FPS,
     VISUALIZATION_ACCENT_ACTION,
     VISUALIZATION_ACCENT_NEXT,
@@ -27,8 +33,11 @@ from config import (
     VISUALIZATION_TEXT_COLOR,
     VISUALIZATION_WINDOW_NAME,
 )
+from gesture_map import get_action_for_gesture
+from logger import log_gesture
+from recorder import record_event
 from runtime import config, state, frames
-from trigger import next_slide, pause_slide, prev_slide
+from trigger import exit_presentation, first_slide, last_slide, next_slide, pause_slide, prev_slide, start_presentation
 
 
 
@@ -46,13 +55,17 @@ class GestureController:
         self._last_action = "-"
         self._visualize = visualize
         self._visualization_window_open = False
-        self._visualization_window_open = False
         self._wrist_x_buffer = deque(maxlen=int(config.get("SWIPE_BUFFER_SIZE", 8)))
         self._fist_frame_count = 0
         self._last_gesture_time = 0.0
         self._mp_draw = mp.solutions.drawing_utils
         self._mp_hands = mp.solutions.hands
         self._mp_styles = mp.solutions.drawing_styles
+        # Double-fist detection (two pause gestures in quick succession = first slide)
+        self._last_pause_time = 0.0
+        # Palm-hold detection (open hand held still = last slide)
+        self._palm_hold_count = 0
+        self._palm_hold_wrist_x = None
 
     def start(self):
         """Start the camera + detection thread."""
@@ -95,6 +108,42 @@ class GestureController:
         self._fist_frame_count = 0
         self._fist_armed = True
         self._missing_hand_frames = 0
+        self._last_pause_time = 0.0
+        self._palm_hold_count = 0
+        self._palm_hold_wrist_x = None
+
+    def _dispatch_action(self, gesture_name: str, fire_actions: bool = True):
+        """Dispatch an action based on the gesture-to-action mapping.
+
+        Returns the action name if dispatched, None otherwise.
+        """
+        action = get_action_for_gesture(gesture_name)
+        if action is None:
+            return None
+
+        action_map = {
+            "next": next_slide,
+            "prev": prev_slide,
+            "pause": pause_slide,
+            "first": first_slide,
+            "last": last_slide,
+            "start": start_presentation,
+            "exit": exit_presentation,
+        }
+
+        func = action_map.get(action)
+        if func is None:
+            return None
+
+        if fire_actions:
+            gesture_start = time.time()
+            func()
+            latency = (time.time() - gesture_start) * 1000
+            state.record_latency(latency)
+            log_gesture(action)
+            record_event(action, {"gesture": gesture_name})
+
+        return action
 
     def _prune_stale_swipe_samples(self, now):
         """Keep only recent wrist samples within the swipe time window."""
@@ -107,16 +156,20 @@ class GestureController:
         buffer_values = [value for _, value in self._wrist_x_buffer]
         buffer_span = 0.0
         buffer_delta = None
+        buffer_velocity = None
 
         if len(self._wrist_x_buffer) >= 2:
             buffer_span = self._wrist_x_buffer[-1][0] - self._wrist_x_buffer[0][0]
             buffer_delta = self._wrist_x_buffer[-1][1] - self._wrist_x_buffer[0][1]
+            if buffer_span > 0:
+                buffer_velocity = abs(buffer_delta) / buffer_span
 
         return {
             "buffer_len": len(self._wrist_x_buffer),
             "buffer_values": buffer_values,
             "buffer_span": buffer_span,
             "buffer_delta": buffer_delta,
+            "buffer_velocity": buffer_velocity,
         }
 
     def _snapshot_debug_state(self, now=None):
@@ -386,12 +439,18 @@ class GestureController:
             min_tracking_confidence=config.get("MIN_TRACKING_CONFIDENCE", 0.4),
         )
         cap = None
+        consecutive_failures = 0
+        max_retry_interval = 30.0
 
         try:
             while not self._stop_event.is_set():
                 if cap is None:
                     cap = self._open_camera()
                     if cap is None:
+                        consecutive_failures += 1
+                        # Exponential backoff with max cap
+                        retry_interval = min(2.0 * (1.5 ** (consecutive_failures - 1)), max_retry_interval)
+                        print(f"[GestureController] Camera not available, retry in {retry_interval:.1f}s (attempt {consecutive_failures})")
                         debug_info = self._snapshot_debug_state()
                         debug_info["hand_detected"] = False
                         debug_info["paused"] = True
@@ -400,8 +459,10 @@ class GestureController:
                             import numpy as np
                             frame = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
                             self._render_visualization(frame, None, debug_info)
-                        time.sleep(2.0)
+                        time.sleep(retry_interval)
                         continue
+                    else:
+                        consecutive_failures = 0
 
                 frame_started_at = time.perf_counter()
                 ret, frame = cap.read()
@@ -475,6 +536,7 @@ class GestureController:
             "buffer_values": swipe_state["buffer_values"],
             "buffer_delta": swipe_state["buffer_delta"],
             "buffer_span": swipe_state["buffer_span"],
+            "buffer_velocity": swipe_state["buffer_velocity"],
             "min_swipe_samples": min(config.get("SWIPE_BUFFER_SIZE", 8), config.get("SWIPE_MIN_SAMPLES", 4)),
             "fist_detected": fist_detected,
             "fist_frame_count": self._fist_frame_count,
@@ -496,60 +558,99 @@ class GestureController:
             debug_info["buffer_values"] = []
             debug_info["buffer_span"] = 0.0
             debug_info["buffer_delta"] = None
+            # Reset palm-hold tracking on fist
+            self._palm_hold_count = 0
+            self._palm_hold_wrist_x = None
             if self._fist_armed:
                 self._fist_frame_count += 1
             debug_info["fist_frame_count"] = self._fist_frame_count
             debug_info["fist_armed"] = self._fist_armed
             if self._fist_armed and self._fist_frame_count >= config.get("FIST_FRAMES_REQUIRED", 3):
-                if fire_actions:
-                    pause_slide()
+                action = self._dispatch_action("fist", fire_actions=fire_actions)
                 self._last_gesture_time = now
                 self._fist_frame_count = 0
                 self._fist_armed = False
-                debug_info["action"] = "pause"
+                debug_info["action"] = action or "pause"
                 debug_info["fist_frame_count"] = 0
                 debug_info["fist_armed"] = False
                 debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
+                # Track for double-fist detection (two pause gestures in quick succession)
+                if self._last_pause_time > 0 and (now - self._last_pause_time) <= config.get("DOUBLE_FIST_WINDOW_SEC", 3.0):
+                    # Double-fist detected!
+                    double_action = self._dispatch_action("double_fist", fire_actions=fire_actions)
+                    self._last_pause_time = 0.0
+                    if double_action:
+                        debug_info["action"] = double_action
+                        debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
+                else:
+                    self._last_pause_time = now
             state.publish(debug_info)
             return debug_info
 
         self._fist_frame_count = 0
         self._fist_armed = True
+        # Track palm-hold for last slide gesture (open hand held still)
+        if self._palm_hold_wrist_x is None:
+            self._palm_hold_wrist_x = wrist_x
+            self._palm_hold_count = 1
+        elif abs(wrist_x - self._palm_hold_wrist_x) <= config.get("PALM_HOLD_MAX_MOVEMENT", 0.03):
+            self._palm_hold_count += 1
+        else:
+            self._palm_hold_wrist_x = wrist_x
+            self._palm_hold_count = 1
         self._wrist_x_buffer.append((now, wrist_x))
         swipe_state = self._swipe_debug_state(now)
         debug_info["buffer_len"] = swipe_state["buffer_len"]
         debug_info["buffer_values"] = swipe_state["buffer_values"]
         debug_info["buffer_delta"] = swipe_state["buffer_delta"]
         debug_info["buffer_span"] = swipe_state["buffer_span"]
+        debug_info["buffer_velocity"] = swipe_state["buffer_velocity"]
         debug_info["fist_frame_count"] = 0
         debug_info["fist_armed"] = True
-        
+        debug_info["palm_hold_count"] = self._palm_hold_count
+
         swipe_threshold = config.get("SWIPE_THRESHOLD", 0.04)
 
         if debug_info["buffer_len"] >= debug_info["min_swipe_samples"] and debug_info["buffer_delta"] is not None:
             delta = debug_info["buffer_delta"]
-            if delta > swipe_threshold:
-                if fire_actions:
-                    next_slide()
+            velocity = debug_info.get("buffer_velocity") or 0.0
+            dead_zone = config.get("SWIPE_DEAD_ZONE", 0.01)
+            velocity_threshold = config.get("SWIPE_VELOCITY_THRESHOLD", 0.15)
+            # Apply dead zone: ignore movements smaller than threshold
+            if abs(delta) < dead_zone:
+                delta = 0
+            # Require minimum velocity for swipe detection
+            if delta > swipe_threshold and velocity >= velocity_threshold:
+                action = self._dispatch_action("swipe_right", fire_actions=fire_actions)
                 self._last_gesture_time = now
                 self._wrist_x_buffer.clear()
-                debug_info["action"] = "next"
+                debug_info["action"] = action or "next"
                 debug_info["buffer_len"] = 0
                 debug_info["buffer_values"] = []
                 debug_info["buffer_span"] = 0.0
                 debug_info["buffer_delta"] = None
                 debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
-            elif delta < -swipe_threshold:
-                if fire_actions:
-                    prev_slide()
+            elif delta < -swipe_threshold and velocity >= velocity_threshold:
+                action = self._dispatch_action("swipe_left", fire_actions=fire_actions)
                 self._last_gesture_time = now
                 self._wrist_x_buffer.clear()
-                debug_info["action"] = "prev"
+                debug_info["action"] = action or "prev"
                 debug_info["buffer_len"] = 0
                 debug_info["buffer_values"] = []
                 debug_info["buffer_span"] = 0.0
                 debug_info["buffer_delta"] = None
                 debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
+                self._palm_hold_count = 0
+                self._palm_hold_wrist_x = None
+
+        # Check for palm-hold (last slide) - open hand held still
+        if self._palm_hold_count >= config.get("PALM_HOLD_FRAMES_REQUIRED", 5):
+            action = self._dispatch_action("palm_hold", fire_actions=fire_actions)
+            self._last_gesture_time = now
+            debug_info["action"] = action or "last"
+            debug_info["cooldown_remaining"] = config.get("GESTURE_COOLDOWN_SEC", 0.9)
+            self._palm_hold_count = 0
+            self._palm_hold_wrist_x = None
 
         state.publish(debug_info)
         return debug_info
@@ -560,6 +661,3 @@ class GestureController:
         pip_ids = [6, 10, 14, 18]
         return [landmarks[tip_id].y > landmarks[pip_id].y for tip_id, pip_id in zip(tip_ids, pip_ids)]
 
-    @staticmethod
-    def _is_fist(landmarks):
-        return all(GestureController._finger_curl_states(landmarks))

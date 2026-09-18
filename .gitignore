@@ -1,7 +1,12 @@
 # Pixi environments
 .pixi/*
 !.pixi/config.toml
-pixi.lock
+
+# Local logs, recordings, and agent metadata
+logs/
+recordings/
+.commandcode/
+*.jsonl
 
 # Python cache 
 __pycache__/

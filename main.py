@@ -2,9 +2,43 @@
 
 import argparse
 import os
+import sys
 import time
 
 from config import APP_POLL_INTERVAL_SEC
+
+
+def check_dependencies():
+    """Verify that all required dependencies are available."""
+    missing = []
+
+    try:
+        import cv2
+    except ImportError:
+        missing.append("opencv-contrib-python")
+
+    try:
+        import mediapipe
+    except ImportError:
+        missing.append("mediapipe")
+
+    try:
+        import pyautogui
+    except ImportError:
+        missing.append("pyautogui")
+
+    try:
+        import flask
+    except ImportError:
+        missing.append("flask")
+
+    if missing:
+        print("[ERROR] Missing required dependencies:")
+        for dep in missing:
+            print(f"  - {dep}")
+        print("\nInstall with: pixi run pip install " + " ".join(missing))
+        return False
+    return True
 
 
 def parse_args():
@@ -48,6 +82,9 @@ def _tray_builders():
 
 
 def main():
+    if not check_dependencies():
+        sys.exit(1)
+
     args = parse_args()
     from gesture import GestureController
     

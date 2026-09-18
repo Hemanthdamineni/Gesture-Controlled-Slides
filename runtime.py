@@ -105,6 +105,7 @@ class StateStore:
         self._subscribers_lock = threading.Lock()
         self._history: deque = deque(maxlen=150)
         self._start_time = time.time()
+        self._latency_history: deque = deque(maxlen=60)
 
     # --- producer side ---
 
@@ -165,6 +166,36 @@ class StateStore:
 
     def uptime(self) -> float:
         return time.time() - self._start_time
+
+    def record_latency(self, latency_ms: float) -> None:
+        """Record a gesture-to-action latency measurement."""
+        with self._state_lock:
+            self._latency_history.append(
+                {
+                    "latency_ms": latency_ms,
+                    "ts": time.time(),
+                }
+            )
+
+    def get_latency_stats(self) -> dict:
+        """Return latency statistics."""
+        with self._state_lock:
+            if not self._latency_history:
+                return {
+                    "count": 0,
+                    "avg_ms": 0,
+                    "min_ms": 0,
+                    "max_ms": 0,
+                    "recent": [],
+                }
+            latencies = [entry["latency_ms"] for entry in self._latency_history]
+            return {
+                "count": len(latencies),
+                "avg_ms": sum(latencies) / len(latencies),
+                "min_ms": min(latencies),
+                "max_ms": max(latencies),
+                "recent": list(self._latency_history)[-10:],
+            }
 
 
 # ---------------------------------------------------------------------------

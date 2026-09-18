@@ -9,11 +9,17 @@ The app currently supports:
 - swipe right: next slide
 - swipe left: previous slide
 - fist: pause or black screen
+- double-fist: jump to first slide
+- palm hold: jump to last slide
+- start/exit presentation mode
 - Pixi-based environment management
 - tray mode when the desktop provides a usable tray backend
 - foreground visualization mode for debugging landmarks and gesture state
-- optional local web dashboard for live tuning and monitoring
-- per-app key overrides plus Wayland-friendly `ydotool` key dispatch fallback
+- local web dashboard with remote slide control
+- per-app key overrides plus platform-specific key dispatch (Linux/macOS/Windows)
+- gesture-to-action remapping
+- sensitivity profiles for different environments
+- session logging and latency monitoring
 
 The project now lives directly in the repository root. There is no nested `gesture-slides/` source directory anymore.
 
@@ -168,6 +174,91 @@ Or stop it by PID or pattern:
 ```bash
 pkill -f 'pixi run python main.py'
 ```
+
+## Per-App Key Bindings
+
+GestureSlides can send different keys depending on which application is active. This is useful when using multiple presentation tools that expect different keyboard shortcuts.
+
+By default, bindings are configured for:
+- Google Chrome (Google Slides)
+- LibreOffice Impress
+- Microsoft PowerPoint
+- Apple Keynote
+
+### Adding Custom App Bindings
+
+Edit `APP_KEY_BINDINGS` in `config.py`:
+
+```python
+APP_KEY_BINDINGS: dict[str, dict[str, str]] = {
+    "google-chrome": {"next": "right", "prev": "left", "pause": "b"},
+    "my-app-name": {"next": "n", "prev": "p", "pause": "escape"},
+}
+```
+
+The key is matched against the active window title (case-insensitive). The first match wins. If no app matches, the default keys (`KEY_NEXT_SLIDE`, `KEY_PREV_SLIDE`, `KEY_PAUSE`) are used.
+
+### Supported Actions
+
+- `next` - advance to next slide
+- `prev` - go to previous slide
+- `pause` - pause/black out presentation
+
+## Gestures
+
+| Gesture | Action | Configurable |
+|---------|--------|--------------|
+| Swipe right | Next slide | Yes |
+| Swipe left | Previous slide | Yes |
+| Fist (hold) | Pause/black screen | Yes |
+| Double-fist | First slide | Yes |
+| Palm hold (still) | Last slide | Yes |
+
+Gestures can be remapped via the web dashboard or by editing `gesture_map.json`.
+
+## Web Dashboard
+
+The dashboard is available at `http://127.0.0.1:7474` when running with `--web`.
+
+Features:
+- **Remote Control**: Touch-friendly buttons to control slides from your phone
+- **Live Feed**: MJPEG camera stream with gesture overlay
+- **Live Tuning**: Adjust gesture thresholds in real-time
+- **Gesture Remapping**: Customize which gesture triggers which action
+- **Profiles**: Save and switch between sensitivity profiles
+- **Session Logs**: View gesture history with timestamps
+- **Latency Monitoring**: Track gesture-to-action response times
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/config` | GET/POST | View/update configuration |
+| `/api/state/stream` | SSE | Live gesture state stream |
+| `/api/action` | POST | Trigger slide actions remotely |
+| `/api/gestures` | GET/POST | View/update gesture mappings |
+| `/api/profiles` | GET | List sensitivity profiles |
+| `/api/profiles/<name>` | GET/POST/DELETE | Manage profiles |
+| `/api/profiles/<name>/activate` | POST | Apply profile settings |
+| `/api/logs` | GET | View gesture session logs |
+| `/api/latency` | GET | View latency statistics |
+| `/api/health` | GET | System health check |
+
+## Platform Support
+
+### Linux
+- Primary development platform
+- Wayland support via `ydotool`
+- X11 support via `xdotool`
+- systemd service integration
+
+### macOS
+- Native key dispatch via `osascript`
+- Camera access requires permissions in System Preferences > Security & Privacy > Camera
+
+### Windows
+- Native key dispatch via `ctypes`
+- DirectShow camera backend
 
 ## Known limitations
 

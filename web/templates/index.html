@@ -61,6 +61,48 @@
         .action-next { color: var(--success); }
         .action-prev { color: var(--info); }
         .action-pause { color: var(--accent); }
+        .action-first { color: #cba6f7; }
+        .action-last { color: #fab387; }
+
+        /* Remote Control Buttons */
+        .remote-controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+        .remote-btn {
+            background: var(--bg);
+            color: var(--text-main);
+            border: 2px solid var(--surface);
+            border-radius: 12px;
+            padding: 15px 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .remote-btn:hover {
+            border-color: var(--accent);
+            transform: scale(1.02);
+        }
+        .remote-btn:active {
+            transform: scale(0.95);
+            background: var(--surface);
+        }
+        .remote-btn .icon {
+            font-size: 1.5rem;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .remote-btn.active {
+            border-color: var(--success);
+            background: rgba(166, 227, 161, 0.1);
+        }
+        @media (max-width: 768px) {
+            .remote-btn { padding: 20px 10px; }
+            .remote-btn .icon { font-size: 1.8rem; }
+        }
         
         /* Layout adjust for mobile */
         @media (max-width: 768px) {
@@ -70,14 +112,41 @@
 </head>
 <body>
     <div class="container">
-        
+
+        <!-- Remote Control -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <h2>Remote Control</h2>
+            <div class="remote-controls">
+                <button class="remote-btn" data-action="first" onclick="sendAction(this)">
+                    <span class="icon">⏮</span>
+                    First
+                </button>
+                <button class="remote-btn" data-action="prev" onclick="sendAction(this)">
+                    <span class="icon">◀</span>
+                    Previous
+                </button>
+                <button class="remote-btn" data-action="pause" onclick="sendAction(this)">
+                    <span class="icon">⏸</span>
+                    Pause
+                </button>
+                <button class="remote-btn" data-action="next" onclick="sendAction(this)">
+                    <span class="icon">▶</span>
+                    Next
+                </button>
+                <button class="remote-btn" data-action="last" onclick="sendAction(this)">
+                    <span class="icon">⏭</span>
+                    Last
+                </button>
+            </div>
+        </div>
+
         <!-- Live Feed & State -->
         <div class="card">
             <h2>Live Feed</h2>
             <div class="feed">
                 <img src="/video_feed" alt="Camera disabled or loading..." onerror="this.style.display='none'">
             </div>
-            
+
             <h2 style="margin-top:20px;">Current State</h2>
             <div class="state-row">
                 <span>Hand Detected</span>
@@ -100,7 +169,7 @@
                 <span class="state-val" id="state-cooldown">0.0s</span>
             </div>
         </div>
-        
+
         <!-- Tuner & History -->
         <div>
             <div class="card" style="margin-bottom: 20px;">
@@ -109,7 +178,7 @@
                     <!-- Config fields injected here via JS -->
                 </div>
             </div>
-            
+
             <div class="card">
                 <h2>Action History</h2>
                 <div class="action-log" id="action-log">
@@ -224,6 +293,27 @@
         evtSource.onerror = function() {
             console.error("SSE connection lost. Reconnecting...");
         };
+
+        // -- Remote Control --
+        async function sendAction(btn) {
+            const action = btn.getAttribute('data-action');
+            btn.classList.add('active');
+            setTimeout(() => btn.classList.remove('active'), 200);
+
+            try {
+                const res = await fetch('/api/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    console.error('Action failed:', data.error);
+                }
+            } catch (e) {
+                console.error('Failed to send action:', e);
+            }
+        }
     </script>
 </body>
 </html>
